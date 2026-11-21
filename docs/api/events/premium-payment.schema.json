@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.meridian.example/payments/premium-payment/v1.schema.json",
+  "title": "Premium payment event",
+  "description": "Canonical, provider-independent representation of a premium payment notification (FR2), published to the Service Bus topic premium-payments. Version 1.0. Versioning: a minor version (1.0 -> 1.1) only adds optional fields or enum values, and consumers must ignore fields they do not know; any other change is a new major version with a new $id. The event never carries payer personal data (NFR6).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "correlationId",
+    "paymentKey",
+    "provider",
+    "country",
+    "providerTransactionId",
+    "providerEventId",
+    "policyNumber",
+    "status",
+    "statusChangedAt",
+    "amount",
+    "currency",
+    "receivedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "description": "Version of this event's format.",
+      "const": "1.0"
+    },
+    "eventId": {
+      "description": "Business event ID, stable across provider retries. Used for deduplication and as the Service Bus MessageId. Quetzal: QZ:{id}. Andina: AND:{transaccion.id}:{transaccion.estado}. Austral: AUS:{eventId}.",
+      "type": "string",
+      "pattern": "^(QZ|AND|AUS):.+$",
+      "maxLength": 120
+    },
+    "correlationId": {
+      "description": "ID of the request that produced the event, assigned by the API Manager (NFR7).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "paymentKey": {
+      "description": "Payment identifier: provider prefix + provider transaction ID. Equals Payment_Key__c in Salesforce and is the Service Bus SessionId.",
+      "type": "string",
+      "pattern": "^(QZ|AND|AUS)-.+$",
+      "maxLength": 80
+    },
+    "provider": {
+      "description": "Payment provider that sent the notification.",
+      "enum": ["Quetzal", "Andina", "Austral"]
+    },
+    "country": {
+      "description": "Country of the payment, ISO 3166-1 alpha-2.",
+      "enum": ["MX", "CO", "CL"]
+    },
+    "providerTransactionId": {
+      "description": "The provider's charge, transaction or payment ID.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "providerEventId": {
+      "description": "The provider's ID for this notification, for support requests with the provider. For Andina it changes on every retry.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "policyNumber": {
+      "description": "Normalized policy number.",
+      "type": "string",
+      "pattern": "^POL-(MX|CO|CL)-[0-9]{9}$"
+    },
+    "status": {
+      "description": "Canonical payment status. PARTIALLY_REFUNDED is written to Salesforce as Captured (assumption 7).",
+      "enum": ["PENDING", "CAPTURED", "FAILED", "REFUNDED", "PARTIALLY_REFUNDED"]
+    },
+    "statusChangedAt": {
+      "description": "Time of the state change at the provider, ISO-8601 in UTC.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "amount": {
+      "description": "Amount in the currency's major unit, as a decimal string with the number of decimals defined by ISO 4217 (MXN and COP: 2, CLP: 0), with at most 14 integer digits, as Salesforce Amount__c (Currency(16, 2)). A string avoids floating-point errors.",
+      "type": "string"
+    },
+    "refundedAmount": {
+      "description": "Refunded amount, same format as amount. Required for REFUNDED and PARTIALLY_REFUNDED, not allowed otherwise.",
+      "type": "string"
+    },
+    "currency": {
+      "description": "ISO 4217 currency code, upper case.",
+      "enum": ["MXN", "COP", "CLP"]
+    },
+    "paymentMethod": {
+      "description": "Type of payment method only (for example card or PSE). Never a token or card data.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "receivedAt": {
+      "description": "Time the intake received the notification, ISO-8601 in UTC.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "enum": ["REFUNDED", "PARTIALLY_REFUNDED"] } },
+        "required": ["status"]
+      },
+      "then": { "required": ["refundedAmount"] },
+      "else": { "not": { "required": ["refundedAmount"] } }
+    },
+    {
+      "if": {
+        "properties": { "currency": { "enum": ["MXN", "COP"] } },
+        "required": ["currency"]
+      },
+      "then": {
+        "properties": {
+          "amount": { "pattern": "^(0|[1-9][0-9]{0,13})\\.[0-9]{2}$" },
+          "refundedAmount": { "pattern": "^(0|[1-9][0-9]{0,13})\\.[0-9]{2}$" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "currency": { "const": "CLP" } },
+        "required": ["currency"]
+      },
+      "then": {
+        "properties": {
+          "amount": { "pattern": "^(0|[1-9][0-9]{0,13})$" },
+          "refundedAmount": { "pattern": "^(0|[1-9][0-9]{0,13})$" }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "schemaVersion": "1.0",
+      "eventId": "AND:TRX-CO-5521907:APROBADA",
+      "correlationId": "7f3a0c2e-5b1d-4c8e-9a2f-1d3e5f7a9b0c",
+      "paymentKey": "AND-TRX-CO-5521907",
+      "provider": "Andina",
+      "country": "CO",
+      "providerTransactionId": "TRX-CO-5521907",
+      "providerEventId": "ntf-8f1c2a77",
+      "policyNumber": "POL-CO-000187342",
+      "status": "CAPTURED",
+      "statusChangedAt": "2026-11-28T19:03:09Z",
+      "amount": "185000.00",
+      "currency": "COP",
+      "paymentMethod": "PSE",
+      "receivedAt": "2026-11-28T19:03:12Z"
+    },
+    {
+      "schemaVersion": "1.0",
+      "eventId": "QZ:evt_01JDQ9W4R6Y2",
+      "correlationId": "2b8e4d10-9c7a-4f3e-8d21-6a5b0c9e1f47",
+      "paymentKey": "QZ-ch_7Hk2Lm9QpZ",
+      "provider": "Quetzal",
+      "country": "MX",
+      "providerTransactionId": "ch_7Hk2Lm9QpZ",
+      "providerEventId": "evt_01JDQ9W4R6Y2",
+      "policyNumber": "POL-MX-000412785",
+      "status": "REFUNDED",
+      "statusChangedAt": "2026-11-29T17:59:55Z",
+      "amount": "1250.00",
+      "refundedAmount": "1250.00",
+      "currency": "MXN",
+      "paymentMethod": "card",
+      "receivedAt": "2026-11-29T18:00:01Z"
+    }
+  ]
+}

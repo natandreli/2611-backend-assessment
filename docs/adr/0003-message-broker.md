@@ -90,7 +90,7 @@ It is the only option that provides every capability ADR-0001 relies on without 
 - **`MessageId` = the canonical event ID** (defined per provider in section 4 of the [solution design](../design/SOLUTION_DESIGN.md)). With duplicate detection enabled over a **3-day window**, which covers the longest provider retry period (Quetzal, 3 days), provider retries are discarded by the broker.
 - **Session ID = the payment key** on the `salesforce-writer` subscription, so notifications for the same payment are processed one at a time.
 - **Each subscription has its own dead-letter queue**, monitored with an alert in every environment and for every country (see INC-0412, where only Mexico had one).
-- **The correlation ID travels as a message property**, so every consumer can log it (NFR7).
+- **The correlation ID, the country and the event's `schemaVersion` travel as message properties.** Every consumer can log the correlation ID (NFR7) and filter its subscription by country or schema version without opening the message. During a breaking change of the event, both major versions are published in parallel and each consumer filters the one it reads (see [`docs/api/README.md`](../api/README.md)).
 - **One auxiliary queue**, `salesforce-retry`, holds the writer's scheduled retries, also with sessions by payment key. It has its own dead-letter queue and alert. Notifications that cannot be mapped are kept in the integration store, not in a queue (see ADR-0002).
 - The tier, sizing and cost are described in [`AZURE_SERVICES.md`](../infra/AZURE_SERVICES.md).
 

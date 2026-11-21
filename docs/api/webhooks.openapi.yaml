@@ -1,0 +1,342 @@
+openapi: 3.1.0
+info:
+  title: Premium Payment Notifications - provider webhooks
+  version: 1.0.0
+  description: |
+    Webhook endpoints that receive premium payment notifications from the payment
+    providers of Mexico (Quetzal Pagos) and Colombia (Andina Pay). Chile (Austral Pagos)
+    is part of the design but not of this API version.
+
+    The endpoints are published in Meridian's API Manager, which forwards each request
+    to the intake service **without modifying the body** (assumption 4) and adds a
+    correlation ID.
+
+    How a request is processed (see `docs/design/SOLUTION_DESIGN.md`, section 2):
+
+    1. The signature is verified over the **raw request bytes**, exactly as each provider
+       specifies, with a constant-time comparison. The body is never parsed before this.
+    2. The notification is translated into the canonical event
+       (`docs/api/events/premium-payment.schema.json`) and recorded in the integration store.
+       Payer personal data is dropped right after the signature is verified.
+    3. The canonical event is published to the Service Bus topic `premium-payments`.
+    4. Only then does the intake answer `200`.
+
+    The response body is always empty. Error responses never include details.
+
+    The request schemas describe the body each provider sends. A body with a valid
+    signature that does not match them is **parked** for Operations and answered with
+    `200`, never rejected with `400`: the provider would only retry the same content.
+servers:
+  - url: https://api.meridian.example/payments/v1
+    description: Public entry point in the API Manager (fictional host)
+
+paths:
+  /webhooks/quetzal:
+    post:
+      operationId: receiveQuetzalNotification
+      summary: Receive a Quetzal Pagos notification (Mexico)
+      description: |
+        Quetzal expects a `2xx` within 10 seconds and retries failed deliveries for up to
+        3 days with the same `id` and an identical body.
+      tags: [Webhooks]
+      security:
+        - quetzalSignature: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuetzalEvent'
+            examples:
+              chargeSucceeded:
+                summary: Charge captured (samples/01-charge-succeeded.json)
+                value:
+                  id: evt_01JDQ3K8M2X7
+                  type: charge.succeeded
+                  api_version: '2025-06-01'
+                  created: 1795888800
+                  data:
+                    charge:
+                      id: ch_7Hk2Lm9QpZ
+                      amount: 125000
+                      currency: mxn
+                      status: succeeded
+                      reference: POL-MX-000412785
+                      paid_at: 1795888796
+                      payment_method:
+                        type: card
+                        token: tok_qz_9sD2fK
+                      customer:
+                        email: maria.lopez@example.com
+              chargeRefunded:
+                summary: Charge fully refunded (samples/03-charge-refunded.json)
+                value:
+                  id: evt_01JDQ9W4R6Y2
+                  type: charge.refunded
+                  api_version: '2025-06-01'
+                  created: 1795975200
+                  data:
+                    charge:
+                      id: ch_7Hk2Lm9QpZ
+                      amount: 125000
+                      amount_refunded: 125000
+                      currency: mxn
+                      status: refunded
+                      reference: POL-MX-000412785
+                      paid_at: 1795888796
+                      refunded_at: 1795975195
+                      payment_method:
+                        type: card
+                        token: tok_qz_9sD2fK
+                      customer:
+                        email: maria.lopez@example.com
+      responses:
+        '200':
+          $ref: '#/components/responses/Accepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /webhooks/andina:
+    post:
+      operationId: receiveAndinaNotification
+      summary: Receive an Andina Pay notification (Colombia)
+      description: |
+        Andina expects `200` or `204` within **5 seconds**; any other status is a failure.
+        It retries up to 5 times within 24 hours, and **every retry carries a new
+        `notificacion_id`**. Duplicates are therefore detected by `transaccion.id` +
+        `transaccion.estado`.
+
+        Since API 2.3, `transaccion.referencia` arrives exactly as typed by the payer. The
+        intake trims it, upper-cases it and prefixes 9-digit values with `POL-CO-`. A
+        reference that is still not `POL-CO-` + 9 digits is parked for Operations and
+        answered with `200` (assumption 3).
+      tags: [Webhooks]
+      security:
+        - andinaSignature: []
+      parameters:
+        - $ref: '#/components/parameters/AndinaTimestamp'
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AndinaNotification'
+            examples:
+              transaccionAprobada:
+                summary: Transaction approved (samples/02-transaccion-aprobada.json)
+                value:
+                  notificacion_id: ntf-8f1c2a77
+                  fecha_notificacion: '2026-11-28T14:03:11-05:00'
+                  transaccion:
+                    id: TRX-CO-5521907
+                    estado: APROBADA
+                    valor: '185000.00'
+                    moneda: COP
+                    referencia: POL-CO-000187342
+                    medio_pago: PSE
+                    fecha_transaccion: '2026-11-28T14:03:09-05:00'
+                    pagador:
+                      nombre: Laura Gómez
+                      documento: CC 1020304050
+                      correo: laura.gomez@example.com
+              transaccionReversada:
+                summary: Transaction reversed (samples/04-transaccion-reversada.json)
+                value:
+                  notificacion_id: ntf-e7a40f58
+                  fecha_notificacion: '2026-12-03T09:15:42-05:00'
+                  transaccion:
+                    id: TRX-CO-5521907
+                    estado: REVERSADA
+                    valor: '185000.00'
+                    moneda: COP
+                    referencia: POL-CO-000187342
+                    medio_pago: PSE
+                    fecha_transaccion: '2026-12-03T09:15:40-05:00'
+                    motivo_reverso: SOLICITUD_BANCO
+                    pagador:
+                      nombre: Laura Gómez
+                      documento: CC 1020304050
+                      correo: laura.gomez@example.com
+      responses:
+        '200':
+          $ref: '#/components/responses/Accepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+components:
+  securitySchemes:
+    quetzalSignature:
+      type: apiKey
+      in: header
+      name: Quetzal-Signature
+      description: |
+        Format `t=<unix_timestamp>,v1=<signature>`. The signature is the lowercase hex
+        HMAC-SHA256 of `<t>.<raw_body>` with the webhook secret. During a secret rotation
+        the header may carry several `v1` values; the request is valid if any of them
+        matches. Requests with `|now - t|` greater than 300 seconds are rejected.
+    andinaSignature:
+      type: apiKey
+      in: header
+      name: X-Andina-Signature
+      description: |
+        Base64 HMAC-SHA256 of `<X-Andina-Timestamp>.<raw_body>` with the webhook secret.
+        Requests whose `X-Andina-Timestamp` differs from the current time by more than
+        10 minutes are rejected.
+
+  parameters:
+    AndinaTimestamp:
+      name: X-Andina-Timestamp
+      in: header
+      required: true
+      description: ISO-8601 timestamp with offset, part of the signed string.
+      schema:
+        type: string
+      example: '2026-11-28T14:03:11-05:00'
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: |
+        Added by the API Manager, not by the provider. Identifies this request through all
+        components (NFR7). If it is missing, or is not a plain identifier of at most 64
+        characters, the intake generates one (assumption 5).
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._-]{1,64}$'
+      example: 7f3a0c2e-5b1d-4c8e-9a2f-1d3e5f7a9b0c
+
+  responses:
+    Accepted:
+      description: |
+        The notification was recorded and, if it could be mapped, published. Also returned
+        for duplicates (already safe) and for parked notifications (authentic but not
+        mappable: a retry would fail again, so Operations handles them). Empty body.
+    Unauthorized:
+      description: |
+        Missing or invalid signature, or timestamp outside the allowed window. Nothing is
+        published. Empty body.
+    Unavailable:
+      description: |
+        The integration store or Service Bus is unavailable, or an unexpected error occurred,
+        so the notification may not be stored safely. The provider must retry later (NFR3).
+        Empty body.
+
+  schemas:
+    QuetzalEvent:
+      description: |
+        Quetzal webhook body, API version 2025-06-01. Unknown fields are ignored.
+        Personal data (`data.charge.customer`) and the payment token are dropped after the
+        signature is verified.
+      type: object
+      required: [id, type, created, data]
+      properties:
+        id:
+          type: string
+          description: Event ID, stable across retries.
+        type:
+          type: string
+          enum: [charge.succeeded, charge.failed, charge.refunded]
+        api_version:
+          type: string
+        created:
+          type: integer
+          description: Event time, Unix seconds (UTC).
+        data:
+          type: object
+          required: [charge]
+          properties:
+            charge:
+              type: object
+              required: [id, amount, currency, reference]
+              properties:
+                id:
+                  type: string
+                  description: Charge ID; several events refer to the same charge.
+                amount:
+                  type: integer
+                  description: Amount in the currency's minor unit (125000 = MXN 1,250.00).
+                amount_refunded:
+                  type: integer
+                  description: Cumulative refunded amount, minor unit. Only in charge.refunded.
+                currency:
+                  type: string
+                  description: ISO 4217, lower case (mxn).
+                status:
+                  type: string
+                failure_code:
+                  type: string
+                reference:
+                  type: string
+                  description: Policy number (POL-MX- + 9 digits).
+                paid_at:
+                  type: [integer, 'null']
+                  description: Unix seconds (UTC).
+                refunded_at:
+                  type: [integer, 'null']
+                  description: Unix seconds (UTC).
+                payment_method:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    token:
+                      type: string
+                      description: Payment token. Never stored or logged.
+                customer:
+                  type: object
+                  description: Personal data. Never stored or logged.
+                  properties:
+                    email:
+                      type: string
+
+    AndinaNotification:
+      description: |
+        Andina webhook body, API version 2.3. Unknown fields (for example
+        `transaccion.canal`) are ignored. Personal data (`transaccion.pagador`) is dropped
+        after the signature is verified.
+      type: object
+      required: [notificacion_id, fecha_notificacion, transaccion]
+      properties:
+        notificacion_id:
+          type: string
+          description: ID of this attempt. Changes on every retry.
+        fecha_notificacion:
+          type: string
+          description: ISO-8601 with offset. Time this attempt was sent.
+        transaccion:
+          type: object
+          required: [id, estado, valor, moneda, referencia, fecha_transaccion]
+          properties:
+            id:
+              type: string
+            estado:
+              type: string
+              enum: [PENDIENTE, APROBADA, RECHAZADA, REVERSADA]
+            valor:
+              type: string
+              description: Decimal amount, major unit, two decimals ("185000.00").
+            moneda:
+              type: string
+              description: ISO 4217 (COP).
+            referencia:
+              type: string
+              description: As typed by the payer since API 2.3; normalized by the intake.
+            medio_pago:
+              type: string
+              description: PSE, TARJETA or EFECTIVO.
+            fecha_transaccion:
+              type: string
+              description: ISO-8601 with offset. Time of the state change.
+            motivo_reverso:
+              type: string
+              description: Only for REVERSADA.
+            pagador:
+              type: object
+              description: Personal data (name, national ID, email). Never stored or logged.
