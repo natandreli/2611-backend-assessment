@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: payment-intake
+  main:
+    banner-mode: off
+
+server:
+  port: 8080
+
+# Per-provider configuration (NFR9). Secrets are referenced by name only; their values live in
+# Key Vault (stubbed by ConfiguredSecretProvider, which reads stub.secrets.<name>).
+intake:
+  providers:
+    quetzal:
+      country: MX
+      timestamp-tolerance: 300s
+      secret-name: quetzal-webhook-secret
+    andina:
+      country: CO
+      timestamp-tolerance: 10m
+      secret-name: andina-webhook-secret

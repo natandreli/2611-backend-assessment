@@ -1,0 +1,7 @@
+# Fictional sandbox secrets published in reference/providers/*/WEBHOOK_SPEC.md. Tests only.
+stub:
+  secrets:
+    quetzal-webhook-secret:
+      - qz_test_whsec_4f8a1c2e9b7d
+    andina-webhook-secret:
+      - andina_test_secret_7c3e19ab
