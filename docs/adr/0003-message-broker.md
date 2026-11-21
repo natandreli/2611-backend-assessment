@@ -87,10 +87,11 @@ It is the only option that provides every capability ADR-0001 relies on without 
 
 - **One topic for all countries.** The country is a property of the message, not a separate queue. Adding a fourth country does not add infrastructure to the shared flow (NFR9). Consumers that only want one country can filter their subscription by that property.
 - **One subscription per consumer:** `salesforce-writer`, `finance` and `notifications`. Each consumer reads at its own pace; a slow consumer does not affect the others.
-- **`MessageId` = the canonical event ID** (provider + transaction ID + state). With duplicate detection enabled over a **3-day window**, which covers the longest provider retry period (Quetzal, 3 days), provider retries are discarded by the broker.
+- **`MessageId` = the canonical event ID** (defined per provider in section 4 of the [solution design](../design/SOLUTION_DESIGN.md)). With duplicate detection enabled over a **3-day window**, which covers the longest provider retry period (Quetzal, 3 days), provider retries are discarded by the broker.
 - **Session ID = the payment key** on the `salesforce-writer` subscription, so notifications for the same payment are processed one at a time.
 - **Each subscription has its own dead-letter queue**, monitored with an alert in every environment and for every country (see INC-0412, where only Mexico had one).
 - **The correlation ID travels as a message property**, so every consumer can log it (NFR7).
+- **One auxiliary queue**, `salesforce-retry`, holds the writer's scheduled retries, also with sessions by payment key. It has its own dead-letter queue and alert. Notifications that cannot be mapped are kept in the integration store, not in a queue (see ADR-0002).
 - The tier, sizing and cost are described in [`AZURE_SERVICES.md`](../infra/AZURE_SERVICES.md).
 
 ## Consequences
@@ -100,10 +101,10 @@ It is the only option that provides every capability ADR-0001 relies on without 
   - New consumers subscribe without any change to the intake (FR6, NFR9).
   - Messages survive outages of Salesforce and of our own services (NFR3).
 - Negative:
-  - Higher cost than Storage Queues or Event Grid, especially if the Premium tier is needed for network isolation.
+  - Higher cost than Storage Queues or Event Grid, especially the Premium tier, which the design needs for private endpoints.
   - Sessions add complexity to the writer: it must handle several sessions at once to keep throughput.
   - Duplicate detection only covers its time window. A duplicate that arrives after 3 days is not discarded by the broker.
 - Risks and how they are mitigated:
-  - *Duplicates outside the detection window:* the integration store keeps a unique constraint on the event ID, and the Salesforce upsert by payment key is idempotent, so a late duplicate is still recorded only once.
+  - *Duplicates outside the detection window:* the payment state machine ignores a notification that does not move the payment forward, and the Salesforce upsert by payment key is idempotent, so a late duplicate is still recorded only once.
   - *A dead-letter queue grows unnoticed (INC-0412):* every subscription's dead-letter queue has a depth alert from day one, created by the infrastructure code rather than by hand.
   - *Lock-in to a Service Bus feature set:* the intake and the writer access the broker through an interface, so the broker could be replaced without changing business logic.

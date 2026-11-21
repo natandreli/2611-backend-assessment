@@ -341,7 +341,7 @@ All provider-specific logic lives in one **adapter per provider** inside the int
 
 Each adapter has its own configuration: webhook path, country, secret name in Key Vault and timestamp tolerance.
 
-**Adding a fourth country or provider** (NFR9) means writing a new adapter with its tests, adding its configuration and secret, and publishing its webhook path in the API Manager. The shared flow does not change: the same topic (the country is a property of the event), the same writer, the same tables and the same Operations API. If the new provider's lifecycle includes a backward transition, only its state mapping is adjusted (assumption 1).
+**Adding a fourth country or provider** (NFR9) means writing a new adapter with its tests, adding its configuration and secret, and publishing its webhook path in the API Manager. The shared flow does not change: the same topic (the country is a property of the event), the same writer, the same tables and the same Operations API. If the new provider's lifecycle includes a backward transition, the state machine is extended for that transition (assumption 1).
 
 ## 4. Idempotency and ordering
 

@@ -23,7 +23,7 @@ The forces at play:
 | Signature verification | HMAC-SHA256 over the **raw request bytes**, with constant-time comparison. Each provider publishes official test vectors | FR1, provider specifications |
 | Volume | 15,000 notifications per day; 120,000 on peak days, with bursts of 40/s | NFR1 |
 | Security | Secrets in a secrets store; managed identities with least privilege; no payer personal data in logs | NFR6 |
-| State the design needs | Current status of each payment (for the state machine), the processing history of each notification (for Operations), and the canonical event (for replays) | FR4, FR5, FR7 |
+| State the design needs | Current status of each payment (for the state machine), the processing history of each notification (for Operations), and the payload of parked notifications (for replays) | FR4, FR5, FR7 |
 | Salesforce API budget | 150,000 calls per rolling 24 h, shared org-wide limit | NFR5 |
 | Delivery constraint | Reviewers read the code but do not run it. MUnit needs MuleSoft Enterprise repository credentials, which this assessment does not provide | `README.md`, `TASKS.md` |
 
@@ -114,13 +114,13 @@ Before each write, the writer reads the payment from Salesforce to apply the sta
 
 #### Option 2 — Azure SQL Database (chosen)
 
-A relational database with three tables: one row per payment with its current state, one row per business event already applied, and one row per notification received with its processing history.
+A relational database with two tables: one row per payment with its current state, and one row per notification received with its processing history.
 
 - Pros:
-  - A **unique constraint** on the event ID of the applied events makes the database itself reject duplicates, even when two arrive at the same instant (FR4).
+  - A **unique constraint** (the primary key on the payment key) guarantees a single row per payment, even when two notifications for it arrive at the same instant (FR4).
   - **Transactions** let the writer read the current status and update it as one isolated operation, so two notifications for the same payment never overwrite each other (FR5).
   - **Secondary indexes** make the lookups Operations needs efficient: by provider transaction ID, provider event ID, policy number, correlation ID and status (FR7).
-  - The canonical event can be stored as a JSON column, which keeps the table stable when the event schema evolves and provides the source for replays.
+  - The tables mirror the Salesforce fields and the processing history, not the canonical event, so a new version of the event schema does not force a database change.
   - Our volume (at most 120,000 notifications per day) is small for a relational database.
   - The team already knows SQL, which lowers the operational risk.
 - Cons:
@@ -156,23 +156,23 @@ A document database with the payment key as partition key.
 
 | Service | Replicas | Scaling | Notes |
 |---|---|---|---|
-| Intake | At least 1 always running (2 in production, spread across availability zones) | Adds replicas with HTTP load | The response to the provider depends **only** on the publish to Service Bus. After publishing, the intake records the notification in the database on a best-effort basis (see below). It does **not** depend on the database, so a database problem never makes us reject a notification. |
+| Intake | At least 1 always running (2 in production, spread across availability zones) | Adds replicas with HTTP load | Before answering, the intake records the notification in the database and publishes it to Service Bus. If either fails, it answers `503` and the provider retries (see below). |
 | Writer | Exactly 1 | Not scaled out | One replica handles the peak (one 200-record batch every 5 s) and keeps the Salesforce call ceiling of ADR-0001. If it stops, Container Apps restarts it and messages wait in Service Bus. |
 
-- Both services use a **managed identity** to reach Service Bus, Azure SQL and Key Vault, with only the roles they need. The intake can only send to the topic and insert rows in the `notification` table; the writer can only read its subscription and write the integration's tables.
+- Both services use a **managed identity** to reach Service Bus, Azure SQL and Key Vault, with only the roles they need. The intake can only send to the topic, and read, insert and update rows in the `notification` table; the writer can only read its subscription, send to the topic (replays of parked notifications), send to and read the `salesforce-retry` queue, and read and write the integration's tables.
 - Provider webhook secrets and the Salesforce client secret live in **Azure Key Vault** and are never stored in code or configuration files (NFR6).
 
 ### How the data is stored
 
-- Three tables. The schema, keys, indexes and retention are described in [`SOLUTION_DESIGN.md`](../design/SOLUTION_DESIGN.md).
-  - `payment`: one row per payment (payment key) with its current status, used by the state machine.
-  - `processed_event`: one row per business event applied, with the event ID as primary key (deduplication) and the canonical event as a JSON column (replays).
+- Two tables. The schema, keys, indexes and retention are described in [`SOLUTION_DESIGN.md`](../design/SOLUTION_DESIGN.md).
+  - `payment`: one row per payment (payment key) with its current status, used by the state machine. A duplicate is recognized because it does not move this status forward, so no separate table of applied events is needed.
   - `notification`: one row per request received (correlation ID), with its processing status. Several rows can share an event ID: the original notification and its duplicates.
-- **Every request the intake receives is recorded**, so Operations can find any notification without searching raw logs (FR7). This includes duplicates, which Service Bus discards before they reach the writer, and requests rejected because of an invalid signature, which are never published:
-  - The intake inserts one row in the `notification` table **after** the publish to Service Bus has succeeded (or after rejecting the request), with a short timeout (for example 500 ms). This write is **best-effort**: if the database does not answer in time, the intake logs the failure and still answers the provider, because the notification is already safe in Service Bus. The writer records the notification again when it processes the event, so an accepted notification is never missing from the history.
-  - A duplicate is shown with status *duplicate*, linked to the first notification with the same event ID.
-  - For a rejected request, only metadata is stored: provider, correlation ID, reason and time. The body is never stored, because its sender is unknown. The API Manager's rate limits prevent flooding the table.
-- The writer owns the payment state and updates the processing status of each notification (recorded, failed, needs attention, dead-lettered).
+- **Every request the intake receives is recorded**, so Operations can find any notification without searching raw logs (FR7):
+  - The intake inserts the row in the `notification` table **before** publishing to Service Bus, and answers `200` only after both have succeeded. If the database or Service Bus is unavailable, it answers `503` and the provider's retry is the safety net (NFR3). A retry is safe: if the first attempt was recorded, the retry is marked as *duplicate*, and Service Bus discards it if the first attempt was published.
+  - Inserting before publishing means that the writer never receives an event whose notification row does not exist yet, and that a failed publish stays visible as *failed*.
+  - A notification that cannot be read or mapped (*parked*) is stored with its payload, without personal data, until Operations fixes it. If the body is not valid JSON, its payload is not stored, because personal data cannot be removed from it. The database is its only durable copy, so no extra queue is needed.
+  - A request rejected because of an invalid signature is recorded on a best-effort basis, with metadata only (provider, correlation ID, reason and time). Its body is never stored, because its sender is unknown, and a database problem must not turn a `401` into a `503`. The API Manager's rate limits prevent flooding the table.
+- The writer owns the payment state. It updates the status of each notification it processes (applied, duplicate, stale, dead-lettered). The result of the write to Salesforce belongs to the payment (`sync_status`), not to the notification.
 - Azure SQL authentication uses each service's managed identity, with no passwords.
 - Schema changes are versioned migrations that live with the code and run in the deployment pipeline.
 - A scheduled job deletes rows older than the retention periods of assumption 9 in [`ASSUMPTIONS.md`](../ASSUMPTIONS.md).
@@ -184,10 +184,10 @@ A document database with the payment key as partition key.
   - Every pull request proves, by running tests, that the signature verification matches the providers' test vectors and that the mappings produce the expected canonical events.
   - No cold start against provider deadlines.
   - The database enforces deduplication and safe state changes, instead of relying only on application code.
-  - The intake does not depend on the database, so the database is never a reason to reject a notification.
+  - Parked notifications are stored durably in the database, so no extra queue is needed for them.
   - Every notification, including duplicates and rejected requests, is visible to Operations in one place (FR7).
 - Negative:
-  - If the database is unavailable at the exact moment a duplicate or a rejected request arrives, that request is missing from the history. It still appears in logs and metrics.
+  - The intake depends on the database: while it is unavailable, the intake answers `503` and the providers retry later (Quetzal for up to 3 days, Andina 5 times in 24 h, Austral 8 times in 48 h). Azure SQL's availability SLA (99.99%) limits this to minutes per month. Rejected requests that arrive during that time may be missing from the history; they still appear in logs and metrics.
   - Meridian gets a second integration technology (Java services next to Mule applications) that the team must learn and operate.
   - Always-running replicas and a database have a fixed monthly cost, even with no traffic.
   - With a single writer replica, a restart or a deployment pauses writes to Salesforce for a short time (seconds to a few minutes).

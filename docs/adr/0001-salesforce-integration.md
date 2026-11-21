@@ -32,13 +32,13 @@ The overall solution is described in [`SOLUTION_DESIGN.md`](../design/SOLUTION_D
 
 | Term | Meaning |
 |---|---|
-| Intake | The service that receives provider webhooks, verifies their signature, translates them into canonical events and publishes them. It answers the provider only after the event is safely stored in Service Bus. |
+| Intake | The service that receives provider webhooks, verifies their signature, translates them into canonical events and publishes them. It answers the provider only after the notification is safely recorded (and, if mapped, published). |
 | Canonical event | The single, provider-independent representation of a payment notification (FR2). It carries no payer personal data. |
 | Azure Service Bus | Azure's managed message broker. It keeps each message until a consumer has processed it, so messages survive a Salesforce outage or a restart of our services. The canonical events are published to a **topic**; each consumer (the writer, Finance, Notifications) reads its own copy through a **subscription**. The choice of Service Bus over other Azure messaging services is justified in [ADR-0003](0003-message-broker.md). |
 | Writer | The service that reads canonical events from its Service Bus subscription and writes them to Salesforce. It is the only component that calls Salesforce. |
 | Integration store | The integration's own database (Azure SQL, see ADR-0002). It keeps the current state of each payment and the processing history of each notification, so the writer never has to read Salesforce. |
 | Payment key | `Payment_Key__c`, the external ID of `Premium_Payment__c`: a provider prefix plus the provider's transaction ID (for example `AND-TRX-CO-5521907`). One record per payment; its status is updated as the payment moves through its lifecycle. |
-| Payment state machine | The rule that decides whether a notification may change a payment's status. Statuses have a rank (`Pending` 1 < `Captured` / `Failed` 2 < `Refunded` 3) and a payment can only move forward. A notification with a lower rank than the current status is ignored; the provider's state-change time only breaks ties between statuses of the same rank (FR5). See assumption 1 in [`ASSUMPTIONS.md`](../ASSUMPTIONS.md). |
+| Payment state machine | The rule that decides whether a notification may change a payment's status. Statuses have a rank (`Pending` 1 < `Captured` / `Failed` 2 < `Refunded` and partial refunds 3) and a payment can only move forward. A notification with a lower rank than the current status is ignored; the provider's state-change time only breaks ties between statuses of the same rank (FR5). See assumption 1 in [`ASSUMPTIONS.md`](../ASSUMPTIONS.md). |
 | Needs attention | Status of a payment that cannot be processed automatically and must be reviewed by Operations (for example, an unknown policy number). It is not retried until someone fixes the cause. |
 | Replay | Sending a payment again through the writer after the cause of its failure has been fixed. It is safe because the upsert by payment key and the state machine prevent duplicates and backward moves. |
 | Dead-letter queue (DLQ) | A Service Bus queue where messages that could not be processed are moved, so they stop blocking the flow and can be inspected and replayed. |
@@ -121,13 +121,13 @@ The writer creates asynchronous bulk jobs that Salesforce processes in the backg
 
 | Salesforce response | Scope | Action |
 |---|---|---|
-| `401 INVALID_SESSION_ID` | Whole request | Obtain a new token once and retry immediately |
+| `401 INVALID_SESSION_ID` | Whole request | Obtain a new token once and retry immediately. If the new token is also rejected, open the circuit and alert |
 | `400 UNABLE_TO_LOCK_ROW` | One record | Retry that record in a later batch with exponential backoff |
 | `500`, `502`, `503`, timeout | Whole request | Retry with exponential backoff; repeated failures open the circuit breaker |
 | `403 REQUEST_LIMIT_EXCEEDED` | Whole org | Open the circuit breaker immediately and alert; resume only when usage recovers |
 | `400` data errors (`INVALID_FIELD`, `FIELD_CUSTOM_VALIDATION_EXCEPTION`, `REQUIRED_FIELD_MISSING`) | One record | **Never retried.** The payment is marked *needs attention* with the error, an alert is raised, and it is replayed once the data is fixed |
 
-- Retries of individual records use exponential backoff (for example 30 s, 1 min, 2 min, 4 min, then every 5 min) through scheduled messages, never immediate redelivery. Retries continue for up to **24 hours**. After that, the message is moved to the dead-letter queue, an alert is raised, and it is replayed once the cause is fixed.
+- Retries of individual records use exponential backoff (for example 30 s, 1 min, 2 min, 4 min, then every 5 min) through scheduled messages, never immediate redelivery. Retries continue for up to **24 hours**. After that, the message is moved to the dead-letter queue, the payment is marked *needs attention*, an alert is raised, and it is replayed once the cause is fixed.
 - The **circuit breaker** stops all writes while Salesforce is unavailable or the org limit is reached. The writer stops reading messages, so they wait in Service Bus without using up retries, and it probes with a single small batch every minute. A 90-minute outage costs about 90 probe calls; nothing is lost.
 - Concurrency is only used to catch up: in normal operation one batch is in flight at a time. After an outage, up to 5 batches run in parallel to drain the backlog. Parallelism does not increase the number of calls, only the speed.
 - A nightly **reconciliation** compares payments older than one hour in the integration's store with Salesforce (a query returns up to 2,000 records per call) and reports differences to Operations. It does not correct them automatically.
@@ -137,7 +137,7 @@ The writer creates asynchronous bulk jobs that Salesforce processes in the backg
 - Positive:
   - Providers never wait for Salesforce, and a Salesforce outage never makes us reject a notification (NFR3, NFR4).
   - Salesforce usage has a fixed ceiling (11.5% of the budget), so this integration cannot exhaust the org-wide limit that the contact center depends on.
-  - After an outage the backlog drains quickly. A 90-minute outage on a peak day accumulates ≈ 7,500 notifications (≈ 38 batches), drained in about a minute.
+  - After an outage the backlog drains quickly. A 90-minute outage on a peak day accumulates ≈ 7,560 notifications (≈ 38 batches), drained in about 30 seconds.
   - Permanent errors no longer burn budget or hide in a dead-letter queue, which is what happened in INC-0412.
 - Negative:
   - Up to 5 s of extra latency per payment because of batching.
