@@ -1,0 +1,15 @@
+# Weekly update pull requests, which go through the same CI gates as any other change.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /practical
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /practical
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

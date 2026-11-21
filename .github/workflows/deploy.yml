@@ -1,0 +1,78 @@
+# Deploys one environment: what-if, then the Bicep deployment (infrastructure and new revisions of
+# the apps in one step), then a health check of the new intake revision. Called by cd.yml.
+
+name: Deploy one environment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment (dev, test, prod-preview or prod)
+        type: string
+        required: true
+      parameters-file:
+        description: Parameters file in infra/environments, if different from the environment name
+        type: string
+        default: ''
+      intake-image:
+        type: string
+        required: true
+      what-if-only:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      PARAMETERS: infra/environments/${{ inputs.parameters-file || inputs.environment }}.bicepparam
+      RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The environment's own identity: dev credentials cannot touch test or prod.
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: What-if (changes that the deployment would make)
+        run: |
+          az deployment group what-if \
+            --resource-group "$RESOURCE_GROUP" \
+            --parameters "$PARAMETERS" \
+            --parameters intakeImage="${{ inputs.intake-image }}" writerImage="${{ vars.WRITER_IMAGE }}"
+
+      - name: Deploy
+        if: ${{ !inputs.what-if-only }}
+        run: |
+          az deployment group create \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "ppn-${{ github.run_number }}-${{ github.run_attempt }}" \
+            --parameters "$PARAMETERS" \
+            --parameters intakeImage="${{ inputs.intake-image }}" writerImage="${{ vars.WRITER_IMAGE }}"
+
+      # The apps only accept traffic from the API Manager, so the runner checks the revision state
+      # through Azure instead of calling the endpoint. A failed revision stops the promotion.
+      - name: Check that the new intake revision is healthy
+        if: ${{ !inputs.what-if-only }}
+        run: |
+          app="ca-ppn-${{ inputs.environment }}-intake"
+          for attempt in $(seq 1 30); do
+            state=$(az containerapp show -g "$RESOURCE_GROUP" -n "$app" \
+              --query "properties.latestReadyRevisionName == properties.latestRevisionName" -o tsv)
+            if [ "$state" = "true" ]; then
+              echo "Latest revision of $app is ready"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Latest revision of $app did not become ready in 5 minutes" >&2
+          exit 1

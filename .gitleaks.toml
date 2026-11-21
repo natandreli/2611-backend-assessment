@@ -1,0 +1,12 @@
+# Secret scanning in CI. The default rules apply everywhere except to the fictional sandbox
+# secrets that the providers publish for tests (reference/) and that the tests use.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fictional provider test secrets"
+paths = [
+  '''^reference/providers/[^/]+/WEBHOOK_SPEC\.md$''',
+  '''^practical/src/test/''',
+]

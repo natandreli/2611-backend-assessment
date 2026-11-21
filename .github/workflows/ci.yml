@@ -1,0 +1,111 @@
+# CI: runs on every pull request, and again in CD before each release. Every job is a required
+# check for merging (branch protection), so nothing reaches main without passing all of them.
+# Why each gate exists: infra/README.md, "CI gates".
+
+name: CI
+
+on:
+  pull_request:
+  workflow_call: # CD runs the same checks before building the release image
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test the intake
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: practical
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      # Signatures against the providers' official vectors, mapping, duplicates, 503 paths, no personal data.
+      - name: Build and run the tests
+        run: ./mvnw -B verify
+      - name: Keep the test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: practical/target/surefire-reports/
+
+  infrastructure:
+    name: Validate the infrastructure code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Offline: compiles the templates, checks resource types and runs the linter rules of
+      # infra/bicepconfig.json (for example, no secrets in parameters or outputs).
+      - name: Lint and build Bicep
+        run: |
+          az bicep install
+          az bicep lint --file infra/main.bicep
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          for env in dev test prod; do
+            az bicep build-params --file "infra/environments/$env.bicepparam" --stdout > /dev/null
+          done
+
+  codeql:
+    name: Static analysis (CodeQL)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+          build-mode: none
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+
+  dependency-review:
+    name: Vulnerable dependencies
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Fails when the pull request adds a dependency with a known high or critical vulnerability.
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  secret-scan:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the whole history, not only the last commit
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  container-image:
+    name: Build and scan the image
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the intake image
+        run: docker build -f practical/Dockerfile -t payment-intake:${{ github.sha }} .
+      # Fails on fixable high or critical vulnerabilities in the base image or the libraries.
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: payment-intake:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'

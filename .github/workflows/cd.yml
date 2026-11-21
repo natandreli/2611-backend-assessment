@@ -1,0 +1,88 @@
+# CD: every merge to main is built once and promoted dev -> test -> prod.
+# Authentication to Azure uses OpenID Connect: GitHub issues a short-lived token that a federated
+# credential on each environment's managed identity trusts. No Azure secret is stored in GitHub;
+# client, tenant and subscription IDs are plain environment variables, not secrets.
+# Defined, not executed (TASKS.md, part C).
+
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # needed to request the OIDC token
+
+concurrency:
+  group: cd # one release at a time, never cancelled half-way
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+  image:
+    name: Build and push the image
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: build # identity with AcrPush on the platform registry only
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build once, tag with the commit
+        id: push
+        run: |
+          image="${{ vars.ACR_NAME }}.azurecr.io/payment-intake:${{ github.sha }}"
+          az acr login --name "${{ vars.ACR_NAME }}"
+          docker build -f practical/Dockerfile -t "$image" .
+          docker push "$image"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+  dev:
+    name: Deploy to dev
+    needs: image
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+      intake-image: ${{ needs.image.outputs.image }}
+
+  test:
+    name: Deploy to test
+    needs: [image, dev]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: test
+      intake-image: ${{ needs.image.outputs.image }}
+
+  # The prod what-if runs first with a read-only identity, so the approvers of the next job can
+  # see exactly which resources will change before they approve.
+  prod-preview:
+    name: Preview prod changes
+    needs: [image, test]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod-preview
+      parameters-file: prod
+      intake-image: ${{ needs.image.outputs.image }}
+      what-if-only: true
+
+  prod:
+    name: Deploy to prod
+    needs: [image, prod-preview]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod # protected: required reviewers, main branch only
+      intake-image: ${{ needs.image.outputs.image }}
