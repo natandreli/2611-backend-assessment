@@ -5,7 +5,7 @@
 
 ## Context
 
-The intake must store every accepted notification durably before answering the provider (NFR3), and the canonical event must reach several independent consumers: the writer that records payments in Salesforce, and the Finance and Notifications systems, which subscribe on their own (FR6). The task asks for the canonical event to be published "on a queue or topic", on Azure.
+The intake must store every canonical event durably before answering the provider (NFR3), and the canonical event must reach several independent consumers: the writer that records payments in Salesforce, and the Finance and Notifications systems, which subscribe on their own (FR6). The task asks for the canonical event to be published "on a queue or topic", on Azure.
 
 [ADR-0001](0001-salesforce-integration.md) defines how payments are written to Salesforce. That design relies on the following broker capabilities:
 

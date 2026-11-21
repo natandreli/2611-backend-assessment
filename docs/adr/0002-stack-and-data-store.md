@@ -156,7 +156,7 @@ A document database with the payment key as partition key.
 
 | Service | Replicas | Scaling | Notes |
 |---|---|---|---|
-| Intake | At least 1 always running (2 in production, spread across availability zones) | Adds replicas with HTTP load | Before answering, the intake records the notification in the database and publishes it to Service Bus. If either fails, it answers `503` and the provider retries (see below). |
+| Intake | At least 1 always running (2 in production, spread across availability zones) | Adds replicas with HTTP load | Before answering, the intake records the notification in the database and, if it is mapped, publishes it to Service Bus. If either fails, it answers `503` and the provider retries (see below). |
 | Writer | Exactly 1 | Not scaled out | One replica handles the peak (one 200-record batch every 5 s) and keeps the Salesforce call ceiling of ADR-0001. If it stops, Container Apps restarts it and messages wait in Service Bus. |
 
 - Both services use a **managed identity** to reach Service Bus, Azure SQL and Key Vault, with only the roles they need. The intake can only send to the topic, and read, insert and update rows in the `notification` table; the writer can only read its subscription, send to the topic (replays of parked notifications), send to and read the `salesforce-retry` queue, and read and write the integration's tables.
