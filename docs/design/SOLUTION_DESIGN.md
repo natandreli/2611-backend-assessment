@@ -239,12 +239,13 @@ sequenceDiagram
 | Invalid signature, or timestamp outside the window | `401` | The sender cannot be verified. If the cause is ours (for example, a wrong secret after a rotation), the provider's retries succeed once it is fixed. |
 | Service Bus unavailable | `503` | It is our failure: the provider must retry, and its retries are our safety net (NFR3). |
 | Integration store unavailable | `503` | Same reason: the notification could not be recorded. Rejected requests are the exception: they still get `401`. |
+| Unexpected error in the intake | `503` | The notification may not be stored, so the provider must retry. |
 
 Error responses never include details (for example, the expected signature).
 
 ## 3. Canonical payment event
 
-The canonical event is the single, provider-independent representation of a payment notification (FR2). Its JSON Schema is [`docs/api/events/premium-payment.schema.json`](../api/events/premium-payment.schema.json).
+The canonical event is the single, provider-independent representation of a payment notification (FR2). Its JSON Schema is [`docs/api/events/premium-payment.schema.json`](../api/events/premium-payment.schema.json). The intake validates every event against this schema before publishing it; an event that does not match is parked, never published.
 
 ### Fields
 
@@ -261,7 +262,7 @@ The canonical event is the single, provider-independent representation of a paym
 | `policyNumber` | string | yes | Normalized policy number, `POL-<country>-<9 digits>`. |
 | `status` | string | yes | `PENDING`, `CAPTURED`, `FAILED`, `REFUNDED` or `PARTIALLY_REFUNDED`. |
 | `statusChangedAt` | string | yes | Time of the state change **at the provider**, ISO-8601 in UTC. |
-| `amount` | string | yes | Decimal amount in the currency's **major unit**, with the number of decimals defined by ISO 4217 (`"1250.00"` MXN, `"185000.00"` COP, `"45990"` CLP). A string avoids floating-point errors. |
+| `amount` | string | yes | Decimal amount in the currency's **major unit**, with the number of decimals defined by ISO 4217 (`"1250.00"` MXN, `"185000.00"` COP, `"45990"` CLP), with at most 14 integer digits, as `Amount__c` (Currency(16, 2)). A string avoids floating-point errors. |
 | `refundedAmount` | string | no | Refunded amount, same format as `amount`. Only for `REFUNDED` and `PARTIALLY_REFUNDED`. |
 | `currency` | string | yes | ISO 4217 code, upper case. |
 | `paymentMethod` | string | no | Type of payment method only (`card`, `PSE`…). Never a token or card data. |
@@ -469,7 +470,7 @@ Month: 26 normal days × 15,000 + 4 peak days × 120,000 ≈ **870,000 notificat
 
 ### Intake
 
-At 40 requests per second, each request verifies a signature, maps the event, inserts one row and publishes one message: tens of milliseconds of work. Two replicas in production absorb the burst, and Container Apps adds replicas with HTTP load. The intake answers within the providers' deadlines because it never waits for Salesforce.
+At 40 requests per second, each request verifies a signature, maps the event, looks up its event ID, inserts one row and publishes one message: tens of milliseconds of work. Two replicas in production absorb the burst, and Container Apps adds replicas with HTTP load. The intake answers within the providers' deadlines because it never waits for Salesforce. Calls to the store and Service Bus use short timeouts (about 2 s), so a slow dependency becomes a `503` and a provider retry, within Andina's 5 s deadline.
 
 ### Salesforce API budget (NFR5)
 
