@@ -1,0 +1,5 @@
+# The intake image only needs its sources and the event schema.
+*
+!practical/
+!docs/api/events/premium-payment.schema.json
+practical/target/

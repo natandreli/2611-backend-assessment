@@ -24,6 +24,12 @@ cd practical
 ./mvnw spring-boot:run   # starts the intake on port 8080, with in-memory stubs and no secrets configured
 ```
 
+Container image, built from the repository root because the build reads `docs/api`:
+
+```bash
+docker build -f practical/Dockerfile -t payment-intake .
+```
+
 The build copies two things from outside `practical/`, so there is a single source of truth:
 
 - `docs/api/events/premium-payment.schema.json` → classpath `schemas/`, used at runtime to validate every event before it is published.
