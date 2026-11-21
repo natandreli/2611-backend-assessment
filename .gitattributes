@@ -1,0 +1,7 @@
+# Provider samples are signed byte for byte (no trailing newline, LF line endings).
+# Never convert their line endings on checkout, or the official signature test vectors stop matching.
+reference/providers/*/samples/*.json -text
+
+# Maven wrapper scripts must keep the line endings of their platform.
+mvnw text eol=lf
+*.cmd text eol=crlf
