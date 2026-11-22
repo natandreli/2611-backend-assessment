@@ -2,13 +2,13 @@
 #   docker build -f practical/Dockerfile -t payment-intake .
 # Tests are not run here: CI runs them before the image is built.
 
-FROM eclipse-temurin:21-jdk AS build
+FROM eclipse-temurin:24-jdk AS build
 WORKDIR /workspace
 COPY docs/api/events/premium-payment.schema.json docs/api/events/
 COPY practical/ practical/
 RUN cd practical && sh ./mvnw -B -q -Dmaven.test.skip=true package
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:24-jre
 RUN useradd --system --uid 10001 --no-create-home intake
 WORKDIR /app
 COPY --from=build /workspace/practical/target/payment-intake-*.jar app.jar
