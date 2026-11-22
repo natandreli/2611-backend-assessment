@@ -5,8 +5,8 @@
 | Field | Value |
 |---|---|
 | Candidate ID (provided by your recruiter) | ngarciarios2001@gmail.com |
-| Final commit SHA | |
-| Date and time of submission (with time zone) | |
+| Final commit SHA | `bc90a7383b87168d2d97ce0529953e8127836715` (last content commit; the next commit only records this SHA) |
+| Date and time of submission (with time zone) | 2026-11-21 23:00 (UTC−5) |
 
 ## Time spent
 

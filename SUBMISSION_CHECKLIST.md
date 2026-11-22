@@ -3,7 +3,7 @@
 Tick every item before you send your repository URL. Missing items are scored as missing.
 
 ## General
-- [ ] `SUBMISSION.md` completed (including the final commit SHA you will send to your recruiter)
+- [x] `SUBMISSION.md` completed (including the final commit SHA you will send to your recruiter)
 - [x] `AI_USAGE.md` completed
 - [x] `docs/ASSUMPTIONS.md` lists every assumption you made
 - [x] No secrets, tokens or real personal data anywhere in the repository or its history
