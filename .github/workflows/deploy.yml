@@ -34,7 +34,7 @@ jobs:
       PARAMETERS: infra/environments/${{ inputs.parameters-file || inputs.environment }}.bicepparam
       RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The environment's own identity: dev credentials cannot touch test or prod.
       - uses: azure/login@v2
