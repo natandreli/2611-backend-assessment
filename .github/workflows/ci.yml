@@ -103,7 +103,7 @@ jobs:
       - name: Build the intake image
         run: docker build -f practical/Dockerfile -t payment-intake:${{ github.sha }} .
       # Fails on fixable high or critical vulnerabilities in the base image or the libraries.
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: payment-intake:${{ github.sha }}
           severity: CRITICAL,HIGH
